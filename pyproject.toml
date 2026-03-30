@@ -1,0 +1,19 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "astshield"
+version = "0.1.0"
+description = "Librería de ofuscación de código Python mediante manipulación de AST."
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [] # Por ahora no dependemos de librerías externas
+
+[project.optional-dependencies]
+dev = ["pytest"] # Solo para cuando corramos las pruebas
+
+[project.scripts]
+# Esto creará un comando global llamado 'astshield'
+astshield = "astshield.cli:main"
+
