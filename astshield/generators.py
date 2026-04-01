@@ -1,5 +1,6 @@
 import random
 import string
+import ast
 
 def generate_random_name(length=12):
     """
@@ -85,3 +86,47 @@ def xor_encrypt_string(text, key):
         encrypted_chars.append(f"\\x{xor_val:02x}")
         
     return "".join(encrypted_chars)
+
+import ast
+import random
+
+def generate_opaque_predicate():
+    """
+    Genera un predicado opaco utilizando la estrategia de 'Alias de Memoria'.
+    Crea referencias cruzadas en el Heap (listas) para evadir la propagación
+    de constantes de los analizadores estáticos.
+
+    Returns
+    -------
+    list
+        Una lista de nodos AST para la configuración inicial (creación del alias).
+    ast.AST
+        El nodo AST que representa la condición que siempre evalúa a True.
+    """
+    # 1. Generamos dos nombres basura para nuestras variables falsas
+    var_original = generate_random_name(length=6)
+    var_alias = generate_random_name(length=6)
+    
+    # 2. Valores señuelo
+    val_inicial = random.randint(1, 50)
+    val_final = random.randint(51, 100)
+    
+    # 3. Construimos la trampa de memoria en texto plano
+    # var_original = [10]
+    # var_alias = var_original  <-- ¡Aquí ocurre la magia! Ambas apuntan a la misma lista.
+    # var_alias[0] = 99         <-- Modificamos el alias, lo que altera el original secretamente.
+    setup_code = f"""
+{var_original} = [{val_inicial}]
+{var_alias} = {var_original}
+{var_alias}[0] = {val_final}
+"""
+    
+    # 4. El predicado evalúa la variable original, que ahora contiene el valor final
+    equation_code = f"{var_original}[0] == {val_final}"
+
+    # 5. Convertimos a nodos AST
+    # .body devuelve una LISTA con los tres nodos de asignación
+    setup_nodes = ast.parse(setup_code.strip()).body 
+    equation_node = ast.parse(equation_code.strip()).body[0].value
+    
+    return setup_nodes, equation_node
