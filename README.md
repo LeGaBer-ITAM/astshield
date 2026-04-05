@@ -76,4 +76,9 @@ exito = obfuscate_file(
 
 ---
 
+Aquí hay un notebook en el que se explora la funcionalidad de la librería.
+
+[![Open In Colab](https://colab.research.google.com/drive/1WgHpyeOoZ2cwoxmDu74xepgecUrltIua?usp=sharing)](https://colab.research.google.com/drive/1WgHpyeOoZ2cwoxmDu74xepgecUrltIua?usp=sharing)
+
+
 **Advertencia de Rendimiento:** El Nivel 3 desactiva intencionadamente la predicción de ramas del procesador e incrementa severamente la complejidad ciclomática del archivo. Se recomienda utilizar el Nivel 3 de forma exclusiva en las funciones que manejen secretos criptográficos, licencias o propiedad intelectual crítica.
