@@ -13,8 +13,8 @@ class Obfuscator(ast.NodeTransformer):
         self.builtins_names = set(dir(builtins))
         self.decrypt_func_name = generate_random_name()
         self.builtins_names.add(self.decrypt_func_name)
-        # NUEVO: Bandera de contexto
         self.inside_fstring = False
+        self.current_level = 3
 
     def visit_JoinedStr(self, node):
         """
@@ -42,28 +42,23 @@ class Obfuscator(ast.NodeTransformer):
         y al final inyecta la función de descifrado para evitar que el ofuscador
         se ataque a sí mismo.
         """
-        # 1. PRIMERO ofuscamos el código original (dejamos que las otras funciones visit_ actúen)
         node = self.generic_visit(node)
-
-        # 2. LUEGO construimos la función de descifrado intacta
         decrypt_code = f"""
 def {self.decrypt_func_name}(c, k):
     _o, _c, _l = ord, chr, len
     return "".join(_c(_o(c[i]) ^ _o(k[i % _l(k)])) for i in range(_l(c)))
 """
         decrypt_ast = ast.parse(decrypt_code)
-
-        # 3. Pegamos la función al principio del árbol YA ofuscado
         node.body = decrypt_ast.body + node.body
 
         return node
+    
     def visit_Import(self, node):
         """
         Atrapa las declaraciones 'import X'. 
         Protege el nombre del módulo para que no sea ofuscado más adelante.
         """
         for alias in node.names:
-            # Si el usuario hace 'import numpy as np', protegemos 'np'
             nombre_a_proteger = alias.asname if alias.asname else alias.name
             self.builtins_names.add(nombre_a_proteger)
             
@@ -79,22 +74,32 @@ def {self.decrypt_func_name}(c, k):
             self.builtins_names.add(nombre_a_proteger)
             
         return self.generic_visit(node)
+    
     def visit_Constant(self, node):
         """
-        Visita los nodos de valores constantes. Cifra los strings regulares.
-        Si detecta que está dentro de un f-string, envuelve la llamada de 
-        descifrado en un FormattedValue (Caballo de Troya) para respetar 
-        las reglas estructurales de ast.JoinedStr.
+        Visita constantes y cifra cadenas de texto si el nivel de protección lo permite.
+
+        Parameters
+        ----------
+        node : ast.Constant
+            El nodo constante a evaluar dentro del AST.
+
+        Returns
+        -------
+        ast.AST
+            El nodo original si el nivel es 0 o no es un string. Un nodo modificado 
+            (con la llamada de descifrado o el FormattedValue) si se aplica el cifrado.
         """
+        if self.current_level == 0:
+            return self.generic_visit(node)
+
         if isinstance(node.value, str):
             texto_original = node.value
             
-            # 1. Cifrado regular
             clave = generate_random_key()
             texto_cifrado_hex = xor_encrypt_string(texto_original, clave)
             nodo_cifrado = ast.parse(f'"{texto_cifrado_hex}"').body[0].value
             
-            # 2. Construimos la llamada a la función de descifrado
             llamada_descifrado = ast.Call(
                 func=ast.Name(id=self.decrypt_func_name, ctx=ast.Load()),
                 args=[
@@ -104,20 +109,16 @@ def {self.decrypt_func_name}(c, k):
                 keywords=[]
             )
             
-            # 3. EL CABALLO DE TROYA: ¿Estamos dentro de un f-string?
             if getattr(self, 'inside_fstring', False):
-                # Envolvemos la llamada de descifrado en un nodo FormattedValue ({})
                 nodo_formateado = ast.FormattedValue(
                     value=llamada_descifrado,
-                    conversion=-1,    # -1 significa sin conversión especial (como !s o !r)
-                    format_spec=None  # Sin formato especial (como :.2f)
+                    conversion=-1,
+                    format_spec=None
                 )
                 return ast.copy_location(nodo_formateado, node)
             
-            # Si es un string normal, devolvemos la llamada directamente
             return ast.copy_location(llamada_descifrado, node)
 
-        # Si no es un string (ej. un número), lo dejamos intacto
         return self.generic_visit(node)
 
     def visit_Name(self, node):
@@ -126,61 +127,151 @@ def {self.decrypt_func_name}(c, k):
 
     def visit_FunctionDef(self, node):
         """
-        Visita las definiciones de funciones. Cambia el nombre de la función,
-        ofusca su contenido interno y luego envuelve todo su cuerpo lógico 
-        dentro de un predicado opaco con código muerto inyectado.
+        Procesa las definiciones de funciones aplicando ofuscación selectiva por capas.
+
+        Busca y procesa el decorador `@protect` para determinar el nivel de seguridad.
+        Elimina la marca del decorador del AST y aplica las transformaciones
+        jerárquicas (renombrado, aplanamiento, predicados) en función del nivel extraído.
+
+        Parameters
+        ----------
+        node : ast.FunctionDef
+            El nodo que representa la definición de la función.
+
+        Returns
+        -------
+        ast.FunctionDef
+            El nodo de la función modificada con las capas de ofuscación pertinentes,
+            o el nodo original si el nivel de protección es 0.
         """
-        # 1. Cambiamos el nombre de la función (Nuestra Capa 0 original)
-        node.name = self._get_obfuscated_name(node.name)
-        
-        # 2. ATENCIÓN: Procesamos el interior de la función PRIMERO
-        # Esto asegura que las variables y strings originales se ofusquen 
-        # antes de que modifiquemos la estructura de la función.
+        nivel_proteccion = 3
+        decoradores_finales = []
+        for dec in node.decorator_list:
+            if isinstance(dec, ast.Call) and isinstance(dec.func, ast.Name) and dec.func.id == 'protect':
+                for kw in dec.keywords:
+                    if kw.arg == 'level' and isinstance(kw.value, ast.Constant):
+                        nivel_proteccion = kw.value.value
+            else:
+                decoradores_finales.append(dec)
+                
+        node.decorator_list = decoradores_finales
+
+        if nivel_proteccion == 0:
+            return node
+
+        if nivel_proteccion >= 1:
+            node.name = self._get_obfuscated_name(node.name)
+
+        nivel_anterior = self.current_level
+        self.current_level = nivel_proteccion
+
         node = self.generic_visit(node)
         
-        # 3. Protección del Docstring (Comentarios de documentación)
-        # Si la función empieza con un texto explicativo, debemos separarlo.
-        # Si lo metemos dentro del 'if', Python dejará de reconocerlo como docstring.
+        self.current_level = nivel_anterior
+
         docstring = []
         cuerpo_real = node.body
         
-        if (len(node.body) > 0 and 
-            isinstance(node.body[0], ast.Expr) and 
-            isinstance(node.body[0].value, ast.Constant) and 
-            isinstance(node.body[0].value.value, str)):
-            
+        if (len(node.body) > 0 and isinstance(node.body[0], ast.Expr) and 
+            isinstance(node.body[0].value, ast.Constant) and isinstance(node.body[0].value.value, str)):
             docstring = [node.body[0]]
             cuerpo_real = node.body[1:]
             
-        # Si la función estaba vacía (solo tenía docstring o un 'pass'), la ignoramos
         if not cuerpo_real:
             return node
 
-        # 4. Invocamos nuestra fábrica de matemáticas
-        setup_node, equation_node = generate_opaque_predicate()
-        
-        # 5. Fabricamos el "Código Muerto" (La trampa para el analista)
-        # Inyectaremos una variable falsa con un texto basura larguísimo
-        nombre_falso = generate_random_name()
-        string_falso = generate_random_name(length=30)
-        nodo_codigo_muerto = ast.Assign(
-            targets=[ast.Name(id=nombre_falso, ctx=ast.Store())],
-            value=ast.Constant(value=string_falso)
-        )
-        
-        # 6. Construimos el laberinto estructural: El bloque 'If'
-        bloque_if = ast.If(
-            test=equation_node,           # La condición que siempre será Verdadera
-            body=cuerpo_real,             # El código real del usuario va aquí
-            orelse=[nodo_codigo_muerto]   # La trampa basura va aquí
-        )
-        
-        # 7. Reensamblamos el cuerpo de la función
-        # Orden: Docstring -> Variable Matemática -> Bloque If gigante
-        node.body = docstring + setup_node + [bloque_if]
-        
+        if nivel_proteccion >= 3:
+            cuerpo_real = self._flatten_control_flow(cuerpo_real)
+
+        if nivel_proteccion >= 2:
+            setup_nodes, equation_node = generate_opaque_predicate()
+            nombre_falso = generate_random_name()
+            string_falso = generate_random_name(length=30)
+            nodo_codigo_muerto = ast.Assign(
+                targets=[ast.Name(id=nombre_falso, ctx=ast.Store())],
+                value=ast.Constant(value=string_falso)
+            )
+            
+            bloque_if = ast.If(test=equation_node, body=cuerpo_real, orelse=[nodo_codigo_muerto])
+            node.body = docstring + setup_nodes + [bloque_if]
+        else:
+            node.body = docstring + cuerpo_real
+
         return node
 
     def visit_arg(self, node):
         node.arg = self._get_obfuscated_name(node.arg)
         return self.generic_visit(node)
+    
+    def _flatten_control_flow(self, body_nodes):
+        """
+        Aplica Aplanamiento de Flujo de Control (Capa 3) a una secuencia de nodos.
+
+        Transforma una lista lineal de instrucciones en una máquina de estados 
+        gobernada por un bucle `while` infinito. El orden físico de los bloques 
+        se aleatoriza, pero el orden lógico de ejecución se mantiene mediante 
+        transiciones de estado, destruyendo el Grafo de Flujo de Control (CFG) original.
+
+        Parameters
+        ----------
+        body_nodes : list of ast.stmt
+            Lista de nodos AST que representan el cuerpo lineal de una función o bloque.
+
+        Returns
+        -------
+        list of ast.stmt
+            Una nueva lista de nodos AST que contiene la asignación del estado inicial 
+            seguida del bucle `while` infinito que implementa la máquina de estados. 
+            Si la lista de entrada tiene 1 o 0 nodos, se devuelve sin modificaciones.
+        """
+        import random
+        
+        if len(body_nodes) <= 1:
+            return body_nodes
+
+        var_estado = generate_random_name()
+        estados = random.sample(range(10000, 99999), len(body_nodes) + 1)
+        estado_salida = estados[-1]
+
+        transiciones = []
+        for i, nodo in enumerate(body_nodes):
+            estado_actual = estados[i]
+            estado_siguiente = estados[i + 1]
+            transiciones.append((estado_actual, [nodo], estado_siguiente))
+
+        transiciones.append((estado_salida, [ast.Break()], None))
+
+        random.shuffle(transiciones)
+        cadena_if = []
+        
+        for estado_val, sentencias, sig_estado in reversed(transiciones):
+            cuerpo_bloque = sentencias.copy()
+
+            if sig_estado is not None:
+                actualizacion_estado = ast.Assign(
+                    targets=[ast.Name(id=var_estado, ctx=ast.Store())],
+                    value=ast.Constant(value=sig_estado)
+                )
+                cuerpo_bloque.append(actualizacion_estado)
+
+            condicion = ast.Compare(
+                left=ast.Name(id=var_estado, ctx=ast.Load()),
+                ops=[ast.Eq()],
+                comparators=[ast.Constant(value=estado_val)]
+            )
+
+            nuevo_if = ast.If(test=condicion, body=cuerpo_bloque, orelse=cadena_if)
+            cadena_if = [nuevo_if]
+
+        bucle_infinito = ast.While(
+            test=ast.Constant(value=True),
+            body=cadena_if,
+            orelse=[]
+        )
+
+        asignacion_inicial = ast.Assign(
+            targets=[ast.Name(id=var_estado, ctx=ast.Store())],
+            value=ast.Constant(value=estados[0])
+        )
+
+        return [asignacion_inicial, bucle_infinito]
