@@ -4,16 +4,22 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "astshield"
-version = "0.1.0"
-description = "Librería de ofuscación de código Python mediante manipulación de AST."
+version = "1.0.0"
+authors = [
+  { name="Leonardo García", email="leonardo.garcia.bernal@gmail.com" },
+]
+description = "Motor de ofuscación estructural y criptográfica para Python."
 readme = "README.md"
-requires-python = ">=3.8"
-dependencies = [] # Por ahora no dependemos de librerías externas
+requires-python = ">=3.9"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+]
 
 [project.optional-dependencies]
-dev = ["pytest"] # Solo para cuando corramos las pruebas
+dev = ["pytest"]
 
 [project.scripts]
-# Esto creará un comando global llamado 'astshield'
 astshield = "astshield.cli:main"
 
